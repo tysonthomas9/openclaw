@@ -1,13 +1,40 @@
 import type { OpenClawPluginApi } from "../../src/plugins/types.js";
 import { ReachyBridgeClient } from "./src/client.js";
 import { resolveConfig } from "./src/config.js";
-import { extractUrls, fetchPageText } from "./src/link-extractor.js";
 import { TranscriptService } from "./src/transcript-service.js";
+
+type TranscriptEntry = { role: string; content: string; timestamp: number };
+
+const MAX_TRANSCRIPT_ENTRIES = 50;
 
 export default function register(api: OpenClawPluginApi) {
   const config = resolveConfig(api.pluginConfig as Record<string, unknown> | undefined);
   const client = new ReachyBridgeClient(config);
   const transcriptService = new TranscriptService(client, config, api.logger);
+
+  // ── Sliding window of Reachy voice transcripts ─────────────────
+  const transcriptBuffer: TranscriptEntry[] = [];
+
+  // ── Helper: log a message to the Reachy Discord log channel ─────
+  function logToDiscord(text: string) {
+    for (const target of config.transcriptChannels) {
+      const [channel, id] = target.split(":", 2);
+      if (!channel || !id) continue;
+      try {
+        const sendFn = getSendFunction(api, channel);
+        if (sendFn) {
+          const recipient = channel === "discord" ? `channel:${id}` : id;
+          sendFn(recipient, text).catch((err: unknown) => {
+            api.logger.error(
+              `[reachy-mini] Failed to log to ${target}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          });
+        }
+      } catch {
+        // channel not available
+      }
+    }
+  }
 
   // ── /reachy command ──────────────────────────────────────────────
   api.registerCommand({
@@ -76,43 +103,83 @@ export default function register(api: OpenClawPluginApi) {
     },
   });
 
-  // ── message_received hook — forward messages to Reachy ──────────
-  if (config.forwardMessages) {
-    api.on("message_received", async (event, ctx) => {
+  // ── before_prompt_build — inject voice context into OpenClaw's agent ──
+  api.on("before_prompt_build", async () => {
+    if (transcriptBuffer.length === 0) return;
+
+    const lines = transcriptBuffer.map((t) => {
+      const role = t.role === "user" ? "User (voice)" : "Reachy";
+      return `${role}: ${t.content}`;
+    });
+
+    return {
+      prependContext:
+        "[Recent voice conversation between user and Reachy Mini robot]\n" +
+        lines.join("\n") +
+        "\n[End voice context]",
+    };
+  });
+
+  // ── message_received — notify Reachy that a message arrived ────
+  if (config.forwardMessages && config.notifyOnReceive) {
+    api.on("message_received", async (event) => {
       const content = event.content?.trim();
       if (!content) return;
 
-      // Skip messages that look like our own transcript forwarding to avoid loops
+      // Skip transcript echoes to avoid loops
       if (content.startsWith("[You] ") || content.startsWith("[Reachy] ")) return;
 
-      const channelId = ctx.channelId ?? "unknown";
-      const prefix = `[${channelId} from ${event.from}]`;
+      const from = event.from ?? "someone";
+      // ~1500 tokens ≈ 6000 chars
+      const trimmed = content.length > 6000 ? content.slice(0, 6000) + "… [trimmed]" : content;
 
-      // Check for URLs — two-phase injection
-      const urls = config.extractLinks ? extractUrls(content) : [];
-
-      if (urls.length > 0) {
-        // Phase 1: instant ack with message text
+      try {
         await client.inject({
-          text: `${prefix} ${content}\n\n[Reading ${urls.length} link(s)...]`,
+          text: `[Notification] ${from} sent a message on Discord. OpenClaw is processing it.\n\nMessage: ${trimmed}`,
           response_instructions:
-            "Acknowledge the message briefly. Mention you're reading the link(s). Keep it short.",
+            "A message just came in on Discord. Briefly acknowledge it and mention OpenClaw is looking into it. " +
+            "You can reference what the message is about but keep it to one short sentence.",
         });
+        logToDiscord(`[→ Reachy] Notified: ${from} sent a message (${content.length} chars)`);
+      } catch (err) {
+        api.logger.error(
+          `[reachy-mini] Failed to notify Reachy: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        logToDiscord(
+          `[→ Reachy] ERROR notifying: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    });
+  }
 
-        // Phase 2: fetch each URL and inject content
-        for (const url of urls) {
-          const pageText = await fetchPageText(url, config.linkMaxChars);
-          await client.inject({
-            text: `[Link content from ${url}]\n\n${pageText}`,
-            response_instructions:
-              "Now discuss the link content the user shared. Be conversational and speak out loud.",
-          });
-        }
-      } else {
-        // Plain text — single injection
+  // ── llm_output — forward OpenClaw's agent reply to Reachy ────
+  if (config.forwardAgentResponse) {
+    api.on("llm_output", async (event) => {
+      const text = event.assistantTexts?.join("\n")?.trim();
+      if (!text) return;
+
+      // ~10K tokens ≈ 40000 chars
+      const trimmed = text.length > 40000 ? text.slice(0, 40000) + "… [trimmed]" : text;
+
+      try {
         await client.inject({
-          text: `${prefix} ${content}`,
+          text: `[From OpenClaw]\n\n${trimmed}`,
+          response_instructions:
+            "OpenClaw (your AI partner) just finished researching something from Discord. " +
+            "Discuss the findings naturally with the user in a conversational voice. " +
+            "You can summarize, highlight interesting parts, or ask follow-up questions. " +
+            "Speak in 2-3 sentences max.",
         });
+        logToDiscord(`[→ Reachy] Forwarded OpenClaw response (${text.length} chars)`);
+      } catch (err) {
+        api.logger.error(
+          `[reachy-mini] Failed to forward agent response to Reachy: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+        logToDiscord(
+          `[→ Reachy] ERROR forwarding: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     });
   }
@@ -120,29 +187,13 @@ export default function register(api: OpenClawPluginApi) {
   // ── Transcript forwarding service ──────────────────────────────
   if (config.transcriptChannels.length > 0) {
     transcriptService.onTranscript((msg) => {
+      // Buffer transcripts for OpenClaw's agent context
+      transcriptBuffer.push({ role: msg.role, content: msg.content, timestamp: msg.timestamp });
+      if (transcriptBuffer.length > MAX_TRANSCRIPT_ENTRIES) transcriptBuffer.shift();
+
+      // Forward to configured Discord log channel
       const roleLabel = msg.role === "user" ? "You" : "Reachy";
-      const text = `[${roleLabel}] ${msg.content}`;
-
-      for (const target of config.transcriptChannels) {
-        const [channel, id] = target.split(":", 2);
-        if (!channel || !id) continue;
-
-        try {
-          const sendFn = getSendFunction(api, channel);
-          if (sendFn) {
-            const recipient = channel === "discord" ? `channel:${id}` : id;
-            sendFn(recipient, text).catch((err: unknown) => {
-              api.logger.error(
-                `[reachy-mini] Failed to send transcript to ${target}: ${
-                  err instanceof Error ? err.message : String(err)
-                }`,
-              );
-            });
-          }
-        } catch {
-          // channel not available
-        }
-      }
+      logToDiscord(`[${roleLabel}] ${msg.content}`);
     });
 
     api.registerService({

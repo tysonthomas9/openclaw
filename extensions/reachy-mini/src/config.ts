@@ -5,6 +5,8 @@ export type ReachyMiniConfig = {
   transcriptChannels: string[];
   extractLinks: boolean;
   linkMaxChars: number;
+  forwardAgentResponse: boolean;
+  notifyOnReceive: boolean;
 };
 
 export function resolveConfig(raw: Record<string, unknown> | undefined): ReachyMiniConfig {
@@ -18,5 +20,7 @@ export function resolveConfig(raw: Record<string, unknown> | undefined): ReachyM
       : [],
     extractLinks: cfg.extractLinks !== false,
     linkMaxChars: typeof cfg.linkMaxChars === "number" ? cfg.linkMaxChars : 4000,
+    forwardAgentResponse: cfg.forwardAgentResponse !== false,
+    notifyOnReceive: cfg.notifyOnReceive !== false,
   };
 }

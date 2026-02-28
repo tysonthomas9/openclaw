@@ -404,6 +404,8 @@ importers:
 
   extensions/open-prose: {}
 
+  extensions/reachy-mini: {}
+
   extensions/signal: {}
 
   extensions/slack: {}

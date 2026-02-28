@@ -1,7 +1,7 @@
 {
   "id": "reachy-mini",
   "name": "Reachy Mini",
-  "description": "Bridge between OpenClaw messaging channels and Reachy Mini robot. Forward messages to the robot, receive transcripts back.",
+  "description": "Peer agent bridge between OpenClaw and Reachy Mini robot. Shares voice context with OpenClaw, forwards research findings to Reachy.",
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
@@ -16,13 +16,13 @@
       },
       "forwardMessages": {
         "type": "boolean",
-        "description": "Forward incoming messages to the robot",
+        "description": "Enable message forwarding between OpenClaw and Reachy",
         "default": true
       },
       "transcriptChannels": {
         "type": "array",
         "items": { "type": "string" },
-        "description": "Channels to forward robot transcripts to (e.g. ['telegram:123456'])"
+        "description": "Channels to forward robot transcripts to (e.g. ['discord:123456'])"
       },
       "extractLinks": {
         "type": "boolean",
@@ -33,6 +33,16 @@
         "type": "number",
         "description": "Max characters to extract from links",
         "default": 4000
+      },
+      "forwardAgentResponse": {
+        "type": "boolean",
+        "description": "Forward OpenClaw's processed agent response to Reachy (via message_sending hook)",
+        "default": true
+      },
+      "notifyOnReceive": {
+        "type": "boolean",
+        "description": "Send Reachy a brief notification when a Discord message arrives",
+        "default": true
       }
     }
   }
