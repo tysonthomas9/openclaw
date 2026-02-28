@@ -1,0 +1,11 @@
+{
+  "name": "@openclaw/reachy-mini",
+  "version": "0.1.0",
+  "description": "Reachy Mini robot bridge — inject messages, forward transcripts",
+  "type": "module",
+  "openclaw": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
