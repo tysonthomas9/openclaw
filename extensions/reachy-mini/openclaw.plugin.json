@@ -43,6 +43,14 @@
         "type": "boolean",
         "description": "Send Reachy a brief notification when a Discord message arrives",
         "default": true
+      },
+      "taskWebhookUrl": {
+        "type": "string",
+        "description": "Discord webhook URL for posting tasks from Reachy (posts as a different user so the bot processes it)"
+      },
+      "taskChannelId": {
+        "type": "string",
+        "description": "Discord channel ID where tasks should be posted (for sendMessage fallback when no webhook is configured)"
       }
     }
   }

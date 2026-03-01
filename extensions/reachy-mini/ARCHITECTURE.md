@@ -90,6 +90,47 @@ Discord same-channel replies go through a direct delivery path (`deliverDiscordR
 
 `llm_output` fires after every LLM response with `assistantTexts[]` containing the full reply, regardless of delivery path.
 
+### Bidirectional Tasks (Reachy → OpenClaw)
+
+Reachy can delegate tasks to OpenClaw using the `ask_openclaw` tool. The flow:
+
+```
+User says to Reachy: "Can you look up the latest robotics news?"
+    │
+    ▼
+Reachy LLM calls ask_openclaw tool
+    │
+    ▼
+Tool broadcasts {"type": "task", "task": "..."} over bridge WebSocket
+    │
+    ▼
+TranscriptService (OpenClaw extension) receives task message
+    │
+    ▼
+Posts to Discord via webhook as "Reachy Mini" user
+    │
+    ▼
+OpenClaw bot picks up the webhook message and processes it
+    │
+    ├─► Agent runs with voice context (before_prompt_build)
+    ├─► llm_output hook forwards result back to Reachy
+    └─► Reply delivered to Discord
+```
+
+**Why a webhook?** Discord bots ignore their own messages. The webhook posts as a different user ("Reachy Mini"), so OpenClaw's bot sees it as an inbound message. Requires `allowBots: true` in Discord channel config since webhook authors have `bot: true`.
+
+**Reachy side:**
+
+- `tools/ask_openclaw.py` — Python tool that broadcasts task over bridge WebSocket
+- `bridge_state` injected via `ToolDependencies` dataclass
+- System prompt tells Reachy when to use the tool (web research, link analysis, Discord messaging)
+
+**OpenClaw side:**
+
+- `TranscriptService.onTask()` handles `type: "task"` WebSocket messages
+- Posts task to Discord via configured webhook URL
+- OpenClaw processes as normal message; result flows back via existing `llm_output` → bridge inject path
+
 ## Config
 
 In `~/.openclaw/openclaw.json` under `plugins.entries.reachy-mini.config`:
@@ -101,7 +142,8 @@ In `~/.openclaw/openclaw.json` under `plugins.entries.reachy-mini.config`:
   "forwardMessages": true,
   "transcriptChannels": ["discord:CHANNEL_ID"],
   "forwardAgentResponse": true,
-  "notifyOnReceive": true
+  "notifyOnReceive": true,
+  "taskWebhookUrl": "https://discord.com/api/webhooks/..."
 }
 ```
 
@@ -113,12 +155,115 @@ In `~/.openclaw/openclaw.json` under `plugins.entries.reachy-mini.config`:
 | `notifyOnReceive`      | `true`                  | Send Reachy a heads-up when Discord messages arrive |
 | `forwardAgentResponse` | `true`                  | Forward OpenClaw's LLM reply to Reachy              |
 | `transcriptChannels`   | `[]`                    | Where to log transcripts (e.g. `discord:123456`)    |
+| `taskWebhookUrl`       | —                       | Discord webhook URL for Reachy → OpenClaw tasks     |
+| `taskChannelId`        | —                       | Fallback: Discord channel ID for task posting       |
+
+### Discord Config
+
+`allowBots` must be enabled in `~/.openclaw/openclaw.json` for OpenClaw to process webhook messages:
+
+```json
+{
+  "channels": {
+    "discord": {
+      "allowBots": true
+    }
+  }
+}
+```
+
+### Discord Webhook Setup
+
+1. Open Discord server → **Server Settings → Integrations → Webhooks → New Webhook**
+2. Set channel to the one OpenClaw monitors (e.g. #general)
+3. Name it "Reachy Mini"
+4. Copy the webhook URL and set it as `taskWebhookUrl` in plugin config
 
 ## Loop Prevention
 
 - `message_received` skips `[You]`/`[Reachy]` prefixed messages (transcript echoes)
 - `llm_output` only fires for OpenClaw's own agent, not for injected Reachy responses
 - Transcript forwarding to Discord log channel uses a separate channel from #general
+
+## Running the System
+
+### Prerequisites
+
+- macOS: Grant **Microphone** permission to Terminal/iTerm in **System Settings > Privacy & Security > Microphone**
+- Node 22+, pnpm installed
+- Python 3.11+ with the reachy conversation app venv set up
+
+### 1. Start OpenClaw Gateway
+
+From the `openclaw` repo root:
+
+```bash
+pnpm openclaw gateway run --force
+```
+
+This starts:
+
+- OpenClaw gateway with Discord bot (@ReachyClaw)
+- reachy-mini plugin (connects to Bridge API WebSocket)
+- Browser control on `http://127.0.0.1:18791/`
+
+### 2. Start Reachy Conversation App
+
+From the `reachy_mini_conversation_app` repo:
+
+```bash
+cd reachy_mini_conversation_app
+source .venv/bin/activate
+reachy-mini-conversation-app --no-camera
+```
+
+Options:
+
+- `--no-camera` — Skip camera (avoids macOS camera permission issues)
+- `--gradio` — Launch Gradio web UI on port 7860 (requires `OPENAI_API_KEY` env var)
+- `--debug` — Enable verbose logging
+
+This starts:
+
+- OpenAI Realtime voice session (API key downloaded from HuggingFace)
+- Bridge API on `http://localhost:8100`
+- Audio input/output via SoundDevice (auto-selects "Reachy Mini Audio" device)
+
+### 3. Verify Connection
+
+Once both are running, you should see in OpenClaw logs:
+
+```
+[reachy-mini] Transcript WebSocket connected
+```
+
+And in Reachy logs:
+
+```
+Bridge WS client connected (1 total)
+```
+
+### Quick Restart (both)
+
+```bash
+# Terminal 1 — OpenClaw
+pnpm openclaw gateway run --force
+
+# Terminal 2 — Reachy
+cd reachy_mini_conversation_app && source .venv/bin/activate && reachy-mini-conversation-app --no-camera
+```
+
+### Environment (.env)
+
+The Reachy app uses `reachy_mini_conversation_app/.env`:
+
+```
+MODEL_NAME=gpt-realtime-1.5
+HF_HOME=./cache
+REACHY_BRIDGE_SECRET=openclaw-reachy-hackathon
+```
+
+The API key is auto-downloaded from HuggingFace. Only set `OPENAI_API_KEY` if using `--gradio` mode or if the HuggingFace download is unavailable.
 
 ## Observability
 
@@ -128,4 +273,5 @@ The #reachy-log Discord channel shows:
 - `[Reachy] ...` — Reachy's voice responses
 - `[→ Reachy] Notified: ...` — When we notify Reachy of a Discord message
 - `[→ Reachy] Forwarded OpenClaw response (N chars)` — When we forward findings
+- `[← Reachy] Task: ...` — When Reachy delegates a task to OpenClaw
 - `[→ Reachy] ERROR ...` — When an injection fails

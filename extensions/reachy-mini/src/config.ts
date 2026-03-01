@@ -7,6 +7,8 @@ export type ReachyMiniConfig = {
   linkMaxChars: number;
   forwardAgentResponse: boolean;
   notifyOnReceive: boolean;
+  taskWebhookUrl?: string;
+  taskChannelId?: string;
 };
 
 export function resolveConfig(raw: Record<string, unknown> | undefined): ReachyMiniConfig {
@@ -22,5 +24,9 @@ export function resolveConfig(raw: Record<string, unknown> | undefined): ReachyM
     linkMaxChars: typeof cfg.linkMaxChars === "number" ? cfg.linkMaxChars : 4000,
     forwardAgentResponse: cfg.forwardAgentResponse !== false,
     notifyOnReceive: cfg.notifyOnReceive !== false,
+    taskWebhookUrl:
+      typeof cfg.taskWebhookUrl === "string" ? cfg.taskWebhookUrl.trim() || undefined : undefined,
+    taskChannelId:
+      typeof cfg.taskChannelId === "string" ? cfg.taskChannelId.trim() || undefined : undefined,
   };
 }

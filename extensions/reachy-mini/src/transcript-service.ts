@@ -9,7 +9,14 @@ type TranscriptMessage = {
   timestamp: number;
 };
 
+type TaskMessage = {
+  type: "task";
+  task: string;
+  timestamp: number;
+};
+
 type TranscriptHandler = (msg: TranscriptMessage) => void;
+type TaskHandler = (msg: TaskMessage) => void;
 
 /**
  * Maintains a WebSocket connection to the Reachy bridge,
@@ -20,6 +27,7 @@ export class TranscriptService {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
   private handler: TranscriptHandler | null = null;
+  private taskHandler: TaskHandler | null = null;
 
   constructor(
     private client: ReachyBridgeClient,
@@ -29,6 +37,10 @@ export class TranscriptService {
 
   onTranscript(handler: TranscriptHandler): void {
     this.handler = handler;
+  }
+
+  onTask(handler: TaskHandler): void {
+    this.taskHandler = handler;
   }
 
   start(): void {
@@ -76,9 +88,11 @@ export class TranscriptService {
     this.ws.onmessage = (event) => {
       try {
         const data = typeof event.data === "string" ? event.data : String(event.data);
-        const msg = JSON.parse(data) as TranscriptMessage;
+        const msg = JSON.parse(data) as { type: string };
         if (msg.type === "transcript" && this.handler) {
-          this.handler(msg);
+          this.handler(msg as TranscriptMessage);
+        } else if (msg.type === "task" && this.taskHandler) {
+          this.taskHandler(msg as TaskMessage);
         }
       } catch {
         // ignore malformed messages

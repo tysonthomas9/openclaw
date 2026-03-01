@@ -184,6 +184,60 @@ export default function register(api: OpenClawPluginApi) {
     });
   }
 
+  // ── Task reception — Reachy asks OpenClaw to do something ─────
+  transcriptService.onTask(async (msg) => {
+    const task = msg.task?.trim();
+    if (!task) return;
+
+    api.logger.info(`[reachy-mini] Received task from Reachy: ${task.slice(0, 100)}`);
+    logToDiscord(`[← Reachy] Task: ${task.slice(0, 200)}`);
+
+    // Approach 1: Discord webhook (preferred — posts as a different user so the bot processes it)
+    if (config.taskWebhookUrl) {
+      try {
+        const resp = await fetch(config.taskWebhookUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            content: `[Task from Reachy] ${task}`,
+            username: "Reachy Mini",
+          }),
+        });
+        if (!resp.ok) {
+          api.logger.error(`[reachy-mini] Webhook POST failed: ${resp.status} ${resp.statusText}`);
+          logToDiscord(`[← Reachy] ERROR posting task via webhook: ${resp.status}`);
+        }
+      } catch (err) {
+        api.logger.error(
+          `[reachy-mini] Webhook POST error: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        logToDiscord(
+          `[← Reachy] ERROR posting task: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      return;
+    }
+
+    // Approach 2: sendMessageDiscord fallback (note: bot may ignore its own messages)
+    if (config.taskChannelId) {
+      const sendFn = getSendFunction(api, "discord");
+      if (sendFn) {
+        try {
+          await sendFn(`channel:${config.taskChannelId}`, `[Task from Reachy] ${task}`);
+        } catch (err) {
+          api.logger.error(
+            `[reachy-mini] Failed to send task to Discord: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        return;
+      }
+    }
+
+    api.logger.warn(
+      "[reachy-mini] Received task but no taskWebhookUrl or taskChannelId configured",
+    );
+  });
+
   // ── Transcript forwarding service ──────────────────────────────
   if (config.transcriptChannels.length > 0) {
     transcriptService.onTranscript((msg) => {
