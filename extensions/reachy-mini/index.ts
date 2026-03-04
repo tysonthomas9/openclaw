@@ -126,8 +126,9 @@ export default function register(api: OpenClawPluginApi) {
       const content = event.content?.trim();
       if (!content) return;
 
-      // Skip transcript echoes to avoid loops
+      // Skip transcript echoes and Reachy's own tasks to avoid loops
       if (content.startsWith("[You] ") || content.startsWith("[Reachy] ")) return;
+      if (content.startsWith("[Task from Reachy]")) return;
 
       const from = event.from ?? "someone";
       // ~1500 tokens ≈ 6000 chars
@@ -238,7 +239,8 @@ export default function register(api: OpenClawPluginApi) {
     );
   });
 
-  // ── Transcript forwarding service ──────────────────────────────
+  // ── Transcript forwarding + bridge connection service ─────────
+  // Always register the service (needed for task delegation even without transcript channels)
   if (config.transcriptChannels.length > 0) {
     transcriptService.onTranscript((msg) => {
       // Buffer transcripts for OpenClaw's agent context
@@ -249,17 +251,17 @@ export default function register(api: OpenClawPluginApi) {
       const roleLabel = msg.role === "user" ? "You" : "Reachy";
       logToDiscord(`[${roleLabel}] ${msg.content}`);
     });
-
-    api.registerService({
-      id: "reachy-mini-transcripts",
-      start: () => {
-        transcriptService.start();
-      },
-      stop: () => {
-        transcriptService.stop();
-      },
-    });
   }
+
+  api.registerService({
+    id: "reachy-mini-bridge",
+    start: () => {
+      transcriptService.start();
+    },
+    stop: () => {
+      transcriptService.stop();
+    },
+  });
 }
 
 function getSendFunction(
